@@ -1,0 +1,119 @@
+---
+title: "Effects of Income on Average SAT score"
+output: github_document
+editor_options: 
+  chunk_output_type: console
+---
+
+This is an exploration of how average household income influences university entrance exam scores. Income data was sourced from the IPUMS NHGIS database while exam score data was sourced from the GOSA database (Georgia office of student achievement).
+
+```{r}
+library(knitr)
+library(tidyverse)
+library(sf)
+library(spatstat)
+library(tmap)
+library(car)
+
+```
+ 
+Import income data and sort into two different categories.
+ 
+```{r}
+income_data<-read.csv("data/complete analysis.csv")%>%
+  select(-c("X","X.1"))
+
+#Household income < 25k/year
+low_income<-income_data%>%
+  select(School_DSTRCT_CD, SDUNI, SDUNIA, NAME_E,
+         AJY9E001, AJY9E002, AJY9E003, AJY9E004, AJY9E005)%>%
+  mutate(Count_less30k = AJY9E002 + AJY9E003 + AJY9E004 + AJY9E005)%>%
+  mutate(pct_low_inc = (AJY9E002 + AJY9E003 + AJY9E004 + AJY9E005)/AJY9E001)
+
+#Household income > 100k/year
+high_income<-income_data%>%
+  select(School_DSTRCT_CD, SDUNI, SDUNIA, NAME_E,
+         AJY9E001, AJY9E014, AJY9E015, AJY9E016, AJY9E017)%>%
+  mutate(Count_more100k = AJY9E014 + AJY9E015 + AJY9E016 + AJY9E017)%>%
+  mutate(pct_high_inc = (AJY9E014 + AJY9E015 + AJY9E016 + AJY9E017)/AJY9E001)
+```
+
+Import SAT scores and filter so that only records for combined scores remain.
+
+```{r}
+raw_SAT_scores<-read.csv("data/All SAT scores GA 2011-2019.csv")%>%
+  group_by(LONG_SCHOOL_YEAR, SCHOOL_DISTRCT_CD)%>%
+  filter(TEST_CMPNT_TYP_CD == "Combined" | TEST_CMPNT_TYP_CD == "Combined Test Score")%>%
+  filter(LONG_SCHOOL_YEAR == "2014-15" | LONG_SCHOOL_YEAR == "2015-16" | LONG_SCHOOL_YEAR == "2016-17" | LONG_SCHOOL_YEAR == "2017-18" | LONG_SCHOOL_YEAR == "2018-19")
+
+new_scale_scores<-raw_SAT_scores%>%
+  filter(LONG_SCHOOL_YEAR == "2015-16" | LONG_SCHOOL_YEAR == "2016-17" | LONG_SCHOOL_YEAR == "2017-18" | LONG_SCHOOL_YEAR == "2018-19")%>%
+  group_by(LONG_SCHOOL_YEAR, SCHOOL_DISTRCT_CD, INSTN_NUMBER)%>%
+  select(-c("X","X.1"))
+
+SAT_scores<-raw_SAT_scores%>%
+  left_join(new_scale_scores)%>%
+  select(-c("X","X.1"))
+
+
+```
+
+Now convert scores on the old scale. The scale changed from 2400 to 1600 in the spring 2016. Create a conversion calculator. 
+
+```{r}
+conversion_scale<-read.csv("data/Conversion chart new to old SAT dash separat.csv")
+
+new_score_calc<-function(old_score){
+  max_range<-conversion_scale %>%
+    filter(Old_Max>old_score)%>%
+    filter(Old_Max == min(Old_Max))
+data.frame(score=old_score,new_score=max_range[,1])
+}
+test<-new_score_calc(1374)
+
+#Conversion of institutional scores
+inst_scores<-SAT_scores%>%
+  filter(LONG_SCHOOL_YEAR == "2014-15")%>%
+  mutate(score = as.numeric(INSTN_AVG_SCORE_VAL))%>%
+  filter(score > 0)
+
+scores<-as.numeric(score_transform$INSTN_AVG_SCORE_VAL)
+
+score_transform<-map_df(inst_scores$score, new_score_calc)
+
+final_converted_scores<-inst_scores%>%
+  select(-'"New Scale"')%>%
+  left_join(score_transform)
+
+all_scores_final_instn<-final_converted_scores%>%
+  full_join(new_scale_scores)
+
+
+
+#Conversion of district scores
+DSTRCT_scores<-SAT_scores%>%
+  filter(LONG_SCHOOL_YEAR == "2014-15")%>%
+  mutate(score = as.numeric(DSTRCT_AVG_SCORE_VAL))%>%
+  filter(score > 0)
+
+score_transform2<-map_df(DSTRCT_scores$score, new_score_calc)
+
+scores2<-as.numeric(score_transform2$DSTRCT_AVG_SCORE_VAL)
+
+final_converted_scores2<-DSTRCT_scores%>%
+  select(-'"New Scale"')%>%
+  left_join(score_transform2)
+
+all_scores_final_DSTRCT<-final_converted_scores2%>%
+  full_join(new_scale_scores)
+```
+
+Get the average of all years SAT scores for each school district. Join the income data to the SAT scores according to SCHOOL_DISTRCT_CD
+
+```{r}
+aggregate_scores_dist<-all_scores_final_DSTRCT%>%
+  group_by(SCHOOL_DISTRCT_CD, DSTRCT_AVG_SCORE_VAL, score, new_score)%>%
+  summarise(District_avg_score = mean(new_score))%>%
+  ungroup()
+```
+
